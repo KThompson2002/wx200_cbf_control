@@ -1,0 +1,21 @@
+# Joint values for wx200 SRDF named states (radians).
+# Keep in sync with interbotix_xsarm_moveit/config/srdf/wx200.srdf.xacro.
+named_states:
+  Home:
+    waist: 0.0
+    shoulder: 0.0
+    elbow: 0.0
+    wrist_angle: 0.0
+    wrist_rotate: 0.0
+  Upright:
+    waist: 0.0
+    shoulder: 0.0
+    elbow: -1.5708
+    wrist_angle: 0.0
+    wrist_rotate: 0.0
+  Sleep:
+    waist: 0.0
+    shoulder: -1.88
+    elbow: 1.55
+    wrist_angle: 0.8
+    wrist_rotate: 0.0

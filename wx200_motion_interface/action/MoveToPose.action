@@ -1,0 +1,12 @@
+# Goal: move the wx200 end effector to a target pose or named SRDF state
+geometry_msgs/PoseStamped target_pose  # EE pose in world frame; ignored if named_target is set
+string named_target                    # SRDF named state: "Home", "Upright", or "Sleep"
+float32 velocity_scaling               # 0.0 → use server default (0.5)
+float32 acceleration_scaling           # 0.0 → use server default (0.5)
+---
+# Result
+bool success
+string message
+---
+# Feedback
+string status
