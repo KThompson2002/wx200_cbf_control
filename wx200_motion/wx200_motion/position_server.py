@@ -22,9 +22,11 @@ from wx200_motion_interface.action import MoveToPose
 
 # Joint values for each SRDF named state; mirrors config/named_states.yaml.
 NAMED_STATES = {
-    'Home':    {'waist': 0.0, 'shoulder':  0.0,  'elbow':  0.0,    'wrist_angle': 0.0, 'wrist_rotate': 0.0},
-    'Upright': {'waist': 0.0, 'shoulder':  0.0,  'elbow': -1.5708, 'wrist_angle': 0.0, 'wrist_rotate': 0.0},
-    'Sleep':   {'waist': 0.0, 'shoulder': -1.88, 'elbow':  1.55,   'wrist_angle': 0.8, 'wrist_rotate': 0.0},
+    'Home':    {'waist': 0.0, 'shoulder':  0.0,  'elbow':  0.0,    'wrist_angle': 0.0,     'wrist_rotate': 0.0},
+    'Upright': {'waist': 0.0, 'shoulder':  0.0,  'elbow': -1.5708, 'wrist_angle': 0.0,     'wrist_rotate': 0.0},
+    'Sleep':   {'waist': 0.0, 'shoulder': -1.88, 'elbow':  1.55,   'wrist_angle': 0.8,     'wrist_rotate': 0.0},
+    'Start':   {'waist': 0.0, 'shoulder': -0.3,  'elbow': 0.5,    'wrist_angle':  1.37,   'wrist_rotate': 0.0},
+    'Servo':   {'waist': 0.0, 'shoulder': -0.3,  'elbow': 0.5,    'wrist_angle':  1.1,    'wrist_rotate': 0.0},
 }
 
 

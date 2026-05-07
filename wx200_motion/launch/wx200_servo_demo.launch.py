@@ -18,7 +18,7 @@ from launch.substitutions import (
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 import yaml
-
+from launch_param_builder import ParameterBuilder
 
 def load_yaml(package_name, file_path):
     pkg_path = get_package_share_directory(package_name)
@@ -38,9 +38,6 @@ def launch_setup(context, *args, **kwargs):
         hardware_type_launch_arg=hardware_type,
     )
 
-    servo_params = {'moveit_servo': load_yaml('wx200_motion', 'config/servo_params.yaml')}
-
-    # ── Robot descriptions ──────────────────────────────────────────────────
     robot_description = {'robot_description': robot_description_arg}
 
     config_path = PathJoinSubstitution([
@@ -108,7 +105,6 @@ def launch_setup(context, *args, **kwargs):
         'publish_transforms_updates': True,
     }
 
-    # ── Hardware layer (xs_sdk, ros2_control, controllers, robot_state_pub) ─
     hardware_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
             PathJoinSubstitution([
@@ -126,12 +122,7 @@ def launch_setup(context, *args, **kwargs):
             'use_sim_time': use_sim_time,
         }.items(),
     )
-
-    # ── move_group node with joint_states remapping fix ─────────────────────
-    # Fix: move_group subscribes to 'joint_states' (relative) but
-    # joint_state_broadcaster publishes to '/wx200/joint_states' (namespaced).
-    # The planning_scene_monitor_options parameter is ignored in this MoveIt
-    # version; the remapping is the only reliable fix.
+    
     move_group_remappings = [
         ('joint_states', f'/{robot_name}/joint_states'),
         (f'{robot_name}/get_planning_scene', f'/{robot_name}/get_planning_scene'),
@@ -191,7 +182,6 @@ def launch_setup(context, *args, **kwargs):
         ],
     )
 
-    # ── Position action server ───────────────────────────────────────────────
     position_server_node = Node(
         package='wx200_motion',
         executable='position_server',
@@ -208,46 +198,26 @@ def launch_setup(context, *args, **kwargs):
         output='screen',
     )
 
-    # Servo Node
+    servo_params = (
+        ParameterBuilder("moveit_servo")
+        .yaml(
+            parameter_namespace="moveit_servo",
+            file_path="config/panda_simulated_config.yaml",
+        )
+        .to_dict()
+    )
 
-    # Launch Servo as a standalone node or as a "node component" for better latency/efficiency
-    # launch_as_standalone_node = LaunchConfiguration(
-    #     "launch_as_standalone_node", default="false"
-    # )
-
+    # The servo cpp interface demo
+    # Creates the Servo node and publishes commands to it
     servo_node = Node(
-        package='moveit_servo',
-        executable='servo_node',
-        name='servo_node',
+        package="realtime_servo",
+        executable="servo_cpp_interface_demo",
+        output="screen",
         parameters=[
-            {'planning_group': 'interbotix_arm'},
             servo_params,
             robot_description,
             robot_description_semantic,
-            kinematics_config,
-            joint_limits,
-            {'use_sim_time': use_sim_time},
         ],
-        output='screen',
-        # condition=IfCondition(launch_as_standalone_node),
-    )
-
-    # cbf_filter
-
-    cbf_filter_node = Node(
-        package='wx200_motion',
-        executable='cbf_filter',
-        name='cbf_filter',
-        output='screen'
-    )
-
-    # joint_state_sanitizer: replaces NaN mimic-joint values so servo_node
-    # can build a valid robot state
-    sanitizer_node = Node(
-        package='wx200_motion',
-        executable='joint_state_sanitizer',
-        name='joint_state_sanitizer',
-        output='screen',
     )
 
     return [
@@ -255,7 +225,6 @@ def launch_setup(context, *args, **kwargs):
         move_group_node,
         rviz_node,
         position_server_node,
-        cbf_filter_node,
         TimerAction(period=8.0, actions=[hardware_launch]),
         TimerAction(period=14.0, actions=[servo_node]),
     ]
@@ -272,11 +241,6 @@ def generate_launch_description():
             'robot_name',
             default_value='wx200',
             description='Name of the robot (typically equal to robot_model).',
-        ),
-        DeclareLaunchArgument(
-            'external_srdf_loc',
-            default_value=TextSubstitution(text=''),
-            description='Optional path to an additional SRDF xacro to include.',
         ),
         DeclareLaunchArgument(
             'mode_configs',
@@ -307,3 +271,5 @@ def generate_launch_description():
         )
     )
     return LaunchDescription(declared_arguments + [OpaqueFunction(function=launch_setup)])
+
+

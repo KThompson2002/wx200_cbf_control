@@ -7,7 +7,7 @@ from interbotix_xs_modules.xs_launch import (
     determine_use_sim_time_param,
 )
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction, TimerAction
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import (
@@ -37,8 +37,6 @@ def launch_setup(context, *args, **kwargs):
         context=context,
         hardware_type_launch_arg=hardware_type,
     )
-
-    servo_params = {'moveit_servo': load_yaml('wx200_motion', 'config/servo_params.yaml')}
 
     # ── Robot descriptions ──────────────────────────────────────────────────
     robot_description = {'robot_description': robot_description_arg}
@@ -98,7 +96,7 @@ def launch_setup(context, *args, **kwargs):
         'moveit_manage_controllers': True,
         'trajectory_execution.allowed_execution_duration_scaling': 1.2,
         'trajectory_execution.allowed_goal_duration_margin': 0.5,
-        'trajectory_execution.allowed_start_tolerance': 0.05,
+        'trajectory_execution.allowed_start_tolerance': 0.01,
     }
 
     planning_scene_monitor = {
@@ -180,15 +178,7 @@ def launch_setup(context, *args, **kwargs):
             {'use_sim_time': use_sim_time},
         ],
         remappings=move_group_remappings,
-        output='log',
-        arguments=[
-            '-d',
-            PathJoinSubstitution(
-                [FindPackageShare(
-                    'wx200_motion'
-                ), 'config', 'motion.rviz']
-            ),
-        ],
+        output='screen',
     )
 
     # ── Position action server ───────────────────────────────────────────────
@@ -208,56 +198,11 @@ def launch_setup(context, *args, **kwargs):
         output='screen',
     )
 
-    # Servo Node
-
-    # Launch Servo as a standalone node or as a "node component" for better latency/efficiency
-    # launch_as_standalone_node = LaunchConfiguration(
-    #     "launch_as_standalone_node", default="false"
-    # )
-
-    servo_node = Node(
-        package='moveit_servo',
-        executable='servo_node',
-        name='servo_node',
-        parameters=[
-            {'planning_group': 'interbotix_arm'},
-            servo_params,
-            robot_description,
-            robot_description_semantic,
-            kinematics_config,
-            joint_limits,
-            {'use_sim_time': use_sim_time},
-        ],
-        output='screen',
-        # condition=IfCondition(launch_as_standalone_node),
-    )
-
-    # cbf_filter
-
-    cbf_filter_node = Node(
-        package='wx200_motion',
-        executable='cbf_filter',
-        name='cbf_filter',
-        output='screen'
-    )
-
-    # joint_state_sanitizer: replaces NaN mimic-joint values so servo_node
-    # can build a valid robot state
-    sanitizer_node = Node(
-        package='wx200_motion',
-        executable='joint_state_sanitizer',
-        name='joint_state_sanitizer',
-        output='screen',
-    )
-
     return [
-        # sanitizer_node,
+        hardware_launch,
         move_group_node,
         rviz_node,
         position_server_node,
-        cbf_filter_node,
-        TimerAction(period=8.0, actions=[hardware_launch]),
-        TimerAction(period=14.0, actions=[servo_node]),
     ]
 
 

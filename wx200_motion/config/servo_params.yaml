@@ -1,0 +1,64 @@
+# MoveIt Servo parameters for wx200
+# Loaded by servo_node via the launch file parameters list.
+# See /opt/ros/kilted/share/moveit_servo/config/servo_parameters.yaml for all options.
+
+move_group_name: interbotix_arm
+
+# ── Timing ────────────────────────────────────────────────────────────────────
+publish_period: 0.02          # 50 Hz control loop
+incoming_command_timeout: 0.1 # discard commands older than this [seconds]
+
+# ── Incoming command format ───────────────────────────────────────────────────
+# speed_units: twist values are actual m/s and rad/s (ML model output)
+command_in_type: speed_units
+
+# All twist commands (linear and angular) are in the planning/world frame.
+# This keeps CBF and orientation corrections consistent without extra transforms.
+apply_twist_commands_about_ee_frame: false
+
+scale:
+  linear: 0.10     # hard cap on linear EE speed [m/s]
+  rotational: 0.30 # hard cap on angular EE speed [rad/s]
+  joint: 0.50      # scale for joint-jog commands (unused for Cartesian)
+
+# ── Topics ────────────────────────────────────────────────────────────────────
+# Absolute path so cbf_filter always has a fixed publish target.
+cartesian_command_in_topic: /servo/delta_twist_cmds
+joint_command_in_topic: /servo/delta_joint_cmds
+
+# Namespaced joint states (same fix as move_group remapping)
+joint_topic: /wx200/joint_states
+
+status_topic: ~/status
+
+# ── Output to ros2_control ────────────────────────────────────────────────────
+command_out_type: trajectory_msgs/JointTrajectory
+command_out_topic: /wx200/arm_controller/joint_trajectory
+publish_joint_positions: true
+publish_joint_velocities: true
+publish_joint_accelerations: false
+
+# ── Planning scene ────────────────────────────────────────────────────────────
+# move_group is the primary monitor; servo must subscribe, not advertise.
+is_primary_planning_scene_monitor: false
+monitored_planning_scene_topic: /monitored_planning_scene
+
+# ── Smoothing ─────────────────────────────────────────────────────────────────
+use_smoothing: true
+smoothing_filter_plugin_name: online_signal_smoothing::ButterworthFilterPlugin
+
+# ── Singularity handling ──────────────────────────────────────────────────────
+lower_singularity_threshold: 1700000000.0          
+hard_stop_singularity_threshold: 300000000000.0 
+leaving_singularity_threshold_multiplier: 2.0
+
+# ── Joint limits ──────────────────────────────────────────────────────────────
+# Single value applies the same margin to all joints in the group [rad].
+joint_limit_margins: [0.1]
+halt_all_joints_in_cartesian_mode: true
+
+# ── Collision checking ────────────────────────────────────────────────────────
+check_collisions: false
+collision_check_rate: 10.0
+self_collision_proximity_threshold: 0.01
+scene_collision_proximity_threshold: 0.02

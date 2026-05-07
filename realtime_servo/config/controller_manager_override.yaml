@@ -1,0 +1,4 @@
+/wx200:
+  controller_manager:
+    ros__parameters:
+      enforce_command_limits: false
