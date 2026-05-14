@@ -443,6 +443,19 @@ private:
 
 		publish_position_target(q_cmd);
 		integrated_positions_ = q_cmd;
+
+		// publish_position_target(q_cmd);
+		// Eigen::VectorXd q_cmd(static_cast<Eigen::Index>(chain_joint_names_.size()));
+		// for (Eigen::Index i = 0; i < q_cmd.size(); ++i) {
+		// 	q_cmd(i) = q(static_cast<unsigned int>(i)) + qdot(i) * position_command_time_from_start_;
+		// }
+
+		// for (Eigen::Index i = 0; i < q_cmd.size(); ++i) {
+		// 	const JointLimits & lim = joint_limits_[static_cast<size_t>(i)];
+		// 	if (lim.has_position_limits) {
+		// 		q_cmd(i) = std::max(lim.min_position, std::min(lim.max_position, q_cmd(i)));
+		// 	}
+		// }
 	}
 
 	void publish_position_target(const Eigen::VectorXd & q_target)

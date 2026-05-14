@@ -69,7 +69,7 @@ class HardwareEnv(Node):
             self.idx += 1
         if self.idx == 10:
             self.step(np.array([0.0, 0.0]))
-            self.reset()
+            # self.reset()
             self.idx += 1
 
     def shutdown(self):
@@ -94,21 +94,21 @@ class HardwareEnv(Node):
         processed = cv2.resize(image, (64, 64))
         return processed
 
-    # def reset(self):
-    #     """Reset arm to home position"""
-    #     try:
-    #         msg = String()
-    #         msg.data = "reset"
-    #         self.reset_pub.publish(msg)
-    #         time.sleep(0.2)
-    #         msg.data = ""
-    #         self.reset_pub.publish(msg)
-    #         obs = self._get_observation()
-    #         self.done_reset = False
-    #         return obs, {}
-    #     except Exception as e:
-    #         self.get_logger().error(f"Reset failed: {e}")
-    #         raise
+    def reset(self):
+        """Reset arm to home position"""
+        try:
+            msg = String()
+            msg.data = "reset"
+            self.reset_pub.publish(msg)
+            time.sleep(0.2)
+            msg.data = ""
+            self.reset_pub.publish(msg)
+            obs = self._get_observation()
+            self.done_reset = False
+            return obs, {}
+        except Exception as e:
+            self.get_logger().error(f"Reset failed: {e}")
+            raise
 
     def _wait_for_arm_stopped(self, vel_threshold=0.01, timeout_sec=5.0):
         """Spin until all joint velocities drop below threshold or timeout."""
@@ -121,45 +121,39 @@ class HardwareEnv(Node):
         self.get_logger().warn("Arm did not stop within timeout, proceeding anyway")
         return False
 
-    def reset(self, max_retries=3):
-        # Zero velocity and wait for the arm controller to finish its in-flight
-        # trajectory before the position server switches to position control mode.
+    def reset(self):
+        # Zero velocity and let the arm controller finish before switching to position mode.
         stop = RelativeMove()
         stop.dx = 0.0
         stop.dy = 0.0
         self.rel_move_pub.publish(stop)
+        # time.sleep(0.5)
         self._wait_for_arm_stopped()
 
-        if not self._pos_client.wait_for_server(timeout_sec=5.0):
-            self.get_logger().error("Reset failed: position server not available")
+        goal = MoveToPose.Goal()
+        goal.named_target = 'Start'
+
+        send_future = self._pos_client.send_goal_async(goal)
+        rclpy.spin_until_future_complete(self, send_future, timeout_sec=10.0)
+        goal_handle = send_future.result()
+        if not goal_handle.accepted:
+            self.get_logger().error("Reset goal rejected by position server")
             return self._get_observation(), {'reset_failed': True}
 
-        for attempt in range(max_retries):
-            goal = MoveToPose.Goal()
-            goal.named_target = 'Start'
+        result_future = goal_handle.get_result_async()
+        rclpy.spin_until_future_complete(self, result_future, timeout_sec=10.0)
 
-            send_future = self._pos_client.send_goal_async(goal)
-            rclpy.spin_until_future_complete(self, send_future)
-
-            goal_handle = send_future.result()
-            if goal_handle is None or not goal_handle.accepted:
-                self.get_logger().warn(f"Reset attempt {attempt + 1}: goal rejected, retrying...")
-                time.sleep(1.0)
-                continue
-
-            result_future = goal_handle.get_result_async()
-            rclpy.spin_until_future_complete(self, result_future)
-
-            result = result_future.result().result
-            if result.success:
-                self.done_reset = False
-                return self._get_observation(), {}
-
-            self.get_logger().warn(f"Reset attempt {attempt + 1} failed: {result.message}, retrying...")
-            time.sleep(1.0)
-
-        self.get_logger().error("Reset failed after all retries")
-        return self._get_observation(), {'reset_failed': True}
+        # self.done_reset = False
+        msg = String()
+        msg.data = "reset"
+        self.reset_pub.publish(msg)
+        time.sleep(0.2)
+        msg.data = ""
+        self.reset_pub.publish(msg)
+        obs = self._get_observation()
+        self.done_reset = False
+        return obs, {}
+        return self._get_observation(), {}
         
     def render(self):
         """Read from camera, and save to path."""
