@@ -67,6 +67,7 @@ public:
 		declare_parameter<double>("control_rate_hz", 100.0);
 		declare_parameter<bool>("publish_ee_state", true);
 		declare_parameter<std::string>("ee_state_topic", "ee_state");
+		declare_parameter<double>("command_timeout_sec", 0.0);
 
 		std::string robot_description;
 		std::string urdf_path;
@@ -88,6 +89,7 @@ public:
 		bool use_damped_pseudoinverse;
 		bool use_adaptive_damping;
 		bool publish_ee_state;
+		double command_timeout_sec;
 
 		get_parameter("robot_description", robot_description);
 		get_parameter("urdf_path", urdf_path);
@@ -109,6 +111,7 @@ public:
 		get_parameter("control_rate_hz", control_rate_hz);
 		get_parameter("publish_ee_state", publish_ee_state);
 		get_parameter("ee_state_topic", ee_state_topic);
+		get_parameter("command_timeout_sec", command_timeout_sec);
 
 		alpha_ = std::min(1.0, std::max(0.0, alpha));
 		base_link_ = base_link;
@@ -123,6 +126,7 @@ public:
 		joint_position_command_topic_ = joint_position_command_topic;
 		use_position_output_ = (output_mode == "position");
 		position_command_time_from_start_ = std::max(0.01, position_command_time_from_start);
+		command_timeout_sec_ = std::max(0.0, command_timeout_sec);
 
 		if (!initialize_kdl(robot_description, urdf_path, base_link, ee_link)) {
 			throw std::runtime_error("Failed to initialize KDL chain/solver.");
@@ -288,6 +292,7 @@ private:
 		std::lock_guard<std::mutex> lock(command_mutex_);
 		latest_command_ = *msg;
 		has_command_ = true;
+		last_command_time_ = get_clock()->now();
 	}
 
 	void joint_state_callback(const sensor_msgs::msg::JointState::SharedPtr msg)
@@ -311,6 +316,16 @@ private:
 
 		{
 			std::lock_guard<std::mutex> lock(command_mutex_);
+			if (has_command_ && command_timeout_sec_ > 0.0) {
+				const double elapsed = (get_clock()->now() - last_command_time_).seconds();
+				if (elapsed >= command_timeout_sec_) {
+					has_command_ = false;
+					filtered_dx_ = 0.0;
+					filtered_dy_ = 0.0;
+					filtered_dz_ = 0.0;
+					filtered_dtheta_ = 0.0;
+				}
+			}
 			if (!has_command_) {
 				RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Waiting for /velocity_pub/vel_command.");
 				publish_zero_joint_velocity();
@@ -541,14 +556,20 @@ private:
 	{
 		const Eigen::VectorXd zero = Eigen::VectorXd::Zero(static_cast<Eigen::Index>(chain_joint_names_.size()));
 		if (use_position_output_) {
-			if (integrated_position_initialized_ && integrated_positions_.size() == zero.size()) {
-				publish_position_target(integrated_positions_);
-			}
+			// Idle in position mode: stop publishing JointTrajectory commands so that
+			// other producers (MoveIt's follow_joint_trajectory action, etc.) can drive
+			// the JTC without being preempted at every control tick. Mark the integrated
+			// position as uninitialized so the next active cycle re-seeds it from the
+			// measured joint positions — otherwise the arm would snap back to its
+			// pre-MoveIt pose on the first new velocity command.
+			integrated_position_initialized_ = false;
 		} else {
 			publish_joint_velocity_command(zero);
 		}
 		prev_qdot_ = zero;
 		has_prev_qdot_ = true;
+		prev_control_time_ = get_clock()->now();
+		has_prev_control_time_ = true;
 	}
 
 	void maybe_publish_ee_state()
@@ -634,6 +655,8 @@ private:
 	double control_period_sec_{0.01};
 	bool has_prev_control_time_{false};
 	rclcpp::Time prev_control_time_{0, 0, RCL_ROS_TIME};
+	double command_timeout_sec_{0.0};
+	rclcpp::Time last_command_time_{0, 0, RCL_ROS_TIME};
 	bool has_prev_qdot_{false};
 	Eigen::VectorXd prev_qdot_;
 

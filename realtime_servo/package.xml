@@ -24,6 +24,7 @@
   <exec_depend>orocos_kdl</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>yaml-cpp</exec_depend>
+  <depend>interbotix_xs_msgs</depend>
 
   <buildtool_depend>rosidl_default_generators</buildtool_depend>
   <exec_depend>rosidl_default_runtime</exec_depend>

@@ -32,6 +32,7 @@ include_directories(
 )
 
 add_executable(jacobian_velctrl_node src/jacobian_velctrl.cpp)
+add_executable(keyboard_teleop src/keyboard_teleop.cpp)
 
 ament_target_dependencies(jacobian_velctrl_node
   rclcpp
@@ -44,7 +45,13 @@ ament_target_dependencies(jacobian_velctrl_node
   orocos_kdl
 )
 
+ament_target_dependencies(keyboard_teleop
+  rclcpp
+  geometry_msgs
+)
+
 target_link_libraries(jacobian_velctrl_node Eigen3::Eigen yaml-cpp)
+target_link_libraries(keyboard_teleop Eigen3::Eigen)
 
 install(DIRECTORY 
   launch
@@ -52,11 +59,15 @@ install(DIRECTORY
   DESTINATION share/${PROJECT_NAME}
 )
 
-install(TARGETS jacobian_velctrl_node #
+install(TARGETS jacobian_velctrl_node keyboard_teleop #
   DESTINATION lib/${PROJECT_NAME})
+
+rosidl_target_interfaces(keyboard_teleop
+  ${PROJECT_NAME} "rosidl_typesupport_cpp")
 
 rosidl_target_interfaces(jacobian_velctrl_node
   ${PROJECT_NAME} "rosidl_typesupport_cpp")
+
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)

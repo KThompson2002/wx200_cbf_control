@@ -239,9 +239,9 @@ def launch_setup(context):
 
     trajectory_execution = {
         'moveit_manage_controllers': True,
-        'trajectory_execution.allowed_execution_duration_scaling': 1.2,
-        'trajectory_execution.allowed_goal_duration_margin': 0.5,
-        'trajectory_execution.allowed_start_tolerance': 0.05,
+        'trajectory_execution.allowed_execution_duration_scaling': 3.0,
+        'trajectory_execution.allowed_goal_duration_margin': 1.2,
+        'trajectory_execution.allowed_start_tolerance': 0.1,
     }
 
     planning_scene_monitor = {
@@ -383,6 +383,17 @@ def launch_setup(context):
         ]
     )
 
+    cbf_filter_node = Node(
+        package='wx200_motion',
+        executable='cbf_filter',
+        name='cbf_filter',
+        output='screen',
+        parameters=[{
+            'input_topic': '/velocity_pub/vel_command',
+            'output_topic': '/wx200/cmd_vel',
+        }],
+    )
+
     # Controller configuration
     # ros2_control_node = Node(
     #     package="controller_manager",
@@ -447,8 +458,11 @@ def launch_setup(context):
                 'output_mode': LaunchConfiguration('control_mode'),
                 'joint_position_command_topic': '/wx200/arm_controller/joint_trajectory',
                 'joint_velocity_command_topic': '/wx200/arm_velocity_controller/commands',
+                'velocity_command_topic': '/wx200/cmd_vel',
                 'alpha': 0.8, # LPF coefficient for velocity smoothing, between [0, 1). 0 means no smoothing (raw Jacobian output), while closer to 1 means more smoothing
                 'use_damped_pseudoinverse': False,
+                'command_timeout_sec': 0.1,
+
             },
         ],
     )
@@ -459,9 +473,10 @@ def launch_setup(context):
         # xs_control_launch,
         # ros2_control_node,
         # TimerAction(period=3.0, actions=[arm_controller_spawner]),
-        TimerAction(period=5.0, actions=[hardware_launch]),
+        TimerAction(period=8.0, actions=[hardware_launch]),
         move_group_node,
         position_server_node,
+        cbf_filter_node,
         # *load_controllers,c
         TimerAction(period=14.0, actions=[jacobian_velctrl]),
         rviz_node,
