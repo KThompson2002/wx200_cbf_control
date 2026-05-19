@@ -58,8 +58,8 @@ def generate_launch_args():
     )
     jacobian_joint_states_topic_arg = DeclareLaunchArgument(
         name='jacobian_joint_states_topic',
-        default_value='/wx200/joint_states',
-        description='Joint states topic consumed by get_jacobian_node'
+        default_value='/wx200/joint_states_clean',
+        description='Joint states topic consumed by jacobian_velctrl (sanitized stream)'
     )
     control_rate_arg = DeclareLaunchArgument(
         name='control_rate_hz',
@@ -69,7 +69,7 @@ def generate_launch_args():
     control_mode_arg = DeclareLaunchArgument(
         name='control_mode',
         default_value='position',
-        description='Jacobian output mode: position or velocity'
+        description='Jacobian output mode: position | velocity | direct_position'
     )
     declared_arguments = [
         DeclareLaunchArgument(
@@ -90,8 +90,8 @@ def generate_launch_args():
         DeclareLaunchArgument(
             'mode_configs',
             default_value=PathJoinSubstitution([
-                FindPackageShare('interbotix_xsarm_moveit_interface'),
-                'config', 'modes.yaml',
+                FindPackageShare('realtime_servo'),
+                'config', 'modes_streaming.yaml',
             ]),
             description="Path to the xs_sdk mode config YAML.",
         ),
@@ -394,6 +394,44 @@ def launch_setup(context):
         }],
     )
 
+    joint_state_sanitizer_node = Node(
+        package='wx200_motion',
+        executable='joint_state_sanitizer',
+        name='joint_state_sanitizer',
+        output='screen',
+        parameters=[{
+            'input_topic': f'/{robot_name}/joint_states',
+            'output_topic': f'/{robot_name}/joint_states_clean',
+        }],
+    )
+
+    effort_watchdog_node = Node(
+        package='wx200_motion',
+        executable='effort_motor_watchdog',
+        name='effort_motor_watchdog',
+        output='screen',
+        parameters=[{
+            'joint_states_topic': f'/{robot_name}/joint_states',
+            'cmd_vel_input_topic': '/velocity_pub/vel_command',
+            'cmd_vel_output_topic': f'/{robot_name}/cmd_vel',
+            'reboot_service': f'/{robot_name}/reboot_motors',
+            'get_registers_service': f'/{robot_name}/get_motor_registers',
+            'torque_enable_service': f'/{robot_name}/torque_enable',
+            'group_name': 'arm',
+            # Tune these on real hardware. Starting from rail-berkeley's
+            # wx250s values dropped to 5 joints; the wx200's shoulder is
+            # single (not dual), so headroom may be tighter.
+            'joint_names': ['waist', 'shoulder', 'elbow', 'wrist_angle', 'wrist_rotate'],
+            'effort_thresholds': [1360.0, 1700.0, 1020.0, 1020.0, 1020.0],
+            'effort_violation_window_sec': 0.1,
+            'effort_check_rate_hz': 50.0,
+            'motor_status_check_rate_hz': 1.0,
+            'zero_publish_rate_hz': 30.0,
+            'auto_reboot': False,
+            'reboot_cooldown_sec': 5.0,
+        }],
+    )
+
     # Controller configuration
     # ros2_control_node = Node(
     #     package="controller_manager",
@@ -452,16 +490,31 @@ def launch_setup(context):
                 'joint_states_topic': LaunchConfiguration('jacobian_joint_states_topic'),
                 'control_rate_hz': LaunchConfiguration('control_rate_hz'),
                 'joint_limits_yaml': os.path.join(
-                    get_package_share_directory('interbotix_xsarm_moveit'),
-                    'config/joint_limits/wx200_joint_limits.yaml'
+                    get_package_share_directory('realtime_servo'),
+                    'config/wx200_joint_limits_full.yaml'
                 ),
                 'output_mode': LaunchConfiguration('control_mode'),
                 'joint_position_command_topic': '/wx200/arm_controller/joint_trajectory',
                 'joint_velocity_command_topic': '/wx200/arm_velocity_controller/commands',
+                'xs_group_command_topic': f'/{robot_name}/commands/joint_group',
+                'xs_group_name': 'arm',
+                'xs_robot_info_service': f'/{robot_name}/get_robot_info',
+                'xs_robot_info_timeout_sec': 5.0,
                 'velocity_command_topic': '/wx200/cmd_vel',
                 'alpha': 0.8, # LPF coefficient for velocity smoothing, between [0, 1). 0 means no smoothing (raw Jacobian output), while closer to 1 means more smoothing
                 'use_damped_pseudoinverse': False,
-                'command_timeout_sec': 0.1,
+                # Must exceed the command period so the velocity persists
+                # between updates. hardware_env and teleop both publish at
+                # 10 Hz (0.1 s); 0.4 s bridges any publish jitter while still
+                # coasting only briefly if the publisher dies. The teleop's
+                # own key_hold_timeout governs stop-on-release, not this.
+                'command_timeout_sec': 0.4,
+                # Joint-limit CBF: smooth deceleration as any joint nears its
+                # bound. Higher alpha = brake later / allow more speed near
+                # the limit. Set enable_joint_cbf False to fall back to the
+                # hard column-removal freeze only.
+                'enable_joint_cbf': True,
+                'joint_cbf_alpha': 2.0,
 
             },
         ],
@@ -477,8 +530,13 @@ def launch_setup(context):
         move_group_node,
         position_server_node,
         cbf_filter_node,
+        # Sanitizer republishes joint_states with NaNs zeroed; bring it up
+        # before the jacobian controller so the clean topic is live.
+        TimerAction(period=9.0, actions=[joint_state_sanitizer_node]),
         # *load_controllers,c
         TimerAction(period=14.0, actions=[jacobian_velctrl]),
+        # Bring the watchdog up after the XS driver services exist.
+        TimerAction(period=12.0, actions=[effort_watchdog_node]),
         rviz_node,
     ]
 

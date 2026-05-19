@@ -1,0 +1,22 @@
+groups:
+  arm:
+    # Stock interbotix profile. profile_type=velocity drives the motor
+    # smoothly toward the latest streamed setpoint at a bounded velocity,
+    # rather than restarting a fixed-duration trajectory every control
+    # cycle (which is what profile_type=time does and what caused the
+    # jitter). The original "uncoordinated motion" symptom was the
+    # overconstrained 6×5 Jacobian, now fixed by the translation-only
+    # solver — not this profile — so there's no reason to leave time mode.
+    operating_mode: position
+    profile_type: velocity
+    profile_velocity: 131
+    profile_acceleration: 25
+    torque_enable: true
+
+singles:
+  gripper:
+    operating_mode: linear_position
+    profile_type: velocity
+    profile_velocity: 131
+    profile_acceleration: 15
+    torque_enable: true

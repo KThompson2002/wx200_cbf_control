@@ -18,6 +18,7 @@ find_package(orocos_kdl REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
+find_package(interbotix_xs_msgs REQUIRED)
 # uncomment the following section in order to fill in
 # further dependencies manually.
 # find_package(<dependency> REQUIRED)
@@ -43,6 +44,7 @@ ament_target_dependencies(jacobian_velctrl_node
   tf2_ros
   kdl_parser
   orocos_kdl
+  interbotix_xs_msgs
 )
 
 ament_target_dependencies(keyboard_teleop
