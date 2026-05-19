@@ -44,8 +44,7 @@ setup(
             'position_server = wx200_motion.position_server:main',
             'cbf_filter = wx200_motion.cbf_filter:main',
             'joint_state_sanitizer = wx200_motion.joint_state_sanitizer:main',
-            'hardware_env = wx200_motion.hardware_env:main',
-            'effort_motor_watchdog = wx200_motion.effort_motor_watchdog:main'
+            'hardware_env = wx200_motion.hardware_env:main'
         ],
     },
 )

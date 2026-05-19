@@ -20,7 +20,6 @@
   <exec_depend>wx200_motion_interface</exec_depend>
   <exec_depend>moveit_servo</exec_depend>
   <exec_depend>realtime_servo</exec_depend>
-  <exec_depend>interbotix_xs_msgs</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

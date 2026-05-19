@@ -1,6 +1,5 @@
 #include <algorithm>
 #include <cmath>
-#include <cstdio>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -12,8 +11,6 @@
 #include <realtime_servo/msg/relative_move.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
-#include <interbotix_xs_msgs/msg/joint_group_command.hpp>
-#include <interbotix_xs_msgs/srv/robot_info.hpp>
 #include <kdl/chain.hpp>
 #include <kdl/chainjnttojacsolver.hpp>
 #include <kdl/jntarray.hpp>
@@ -58,35 +55,8 @@ public:
 		declare_parameter<std::string>("velocity_command_topic", "/velocity_pub/vel_command");
 		declare_parameter<std::string>("joint_velocity_command_topic", "/arm_velocity_controller/commands");
 		declare_parameter<std::string>("joint_position_command_topic", "/arm_controller/joint_trajectory");
-		// output_mode: "position" (JointTrajectory via JTC), "velocity" (Float64MultiArray
-		// via forward velocity controller), or "direct_position" (JointGroupCommand straight
-		// to the XS driver, skipping JTC).
 		declare_parameter<std::string>("output_mode", "position");
-		declare_parameter<std::string>("xs_group_command_topic", "/wx200/commands/joint_group");
-		declare_parameter<std::string>("xs_group_name", "arm");
-		declare_parameter<std::string>("xs_robot_info_service", "/wx200/get_robot_info");
-		// Fallback ordering used if the RobotInfo service does not respond within
-		// xs_robot_info_timeout_sec; matches the standard wx200 motor_config yaml.
-		declare_parameter<std::vector<std::string>>(
-			"xs_joint_order_fallback",
-			std::vector<std::string>{"waist", "shoulder", "elbow", "wrist_angle", "wrist_rotate"});
-		declare_parameter<double>("xs_robot_info_timeout_sec", 5.0);
 		declare_parameter<double>("position_command_time_from_start", 0.1);
-		declare_parameter<double>("position_lead_clamp", 0.05);
-		// Auto-reseed the integrator only when it has diverged from the
-		// measured arm by more than this many radians on any joint. Sized
-		// to be bigger than realistic gravity droop / tracking error but
-		// smaller than any MoveIt move the user might initiate while
-		// velocity control is idle.
-		declare_parameter<double>("reseed_divergence_threshold", 0.3);
-		// Joint-limit CBF: smoothly scale the whole qdot vector down as any
-		// joint nears its position limit so the arm decelerates into the
-		// bound instead of being hard-frozen. joint_cbf_alpha is the decay
-		// rate (higher = brake later / allow more speed near the limit);
-		// the soft slowdown zone for a joint moving at q̇ is roughly
-		// q̇ / alpha radians wide.
-		declare_parameter<bool>("enable_joint_cbf", true);
-		declare_parameter<double>("joint_cbf_alpha", 2.0);
 		declare_parameter<std::string>("joint_limits_yaml", "");
 		declare_parameter<double>("position_limit_margin", 0.02);
 		declare_parameter<bool>("use_damped_pseudoinverse", false);
@@ -108,16 +78,10 @@ public:
 		std::string joint_velocity_command_topic;
 		std::string joint_position_command_topic;
 		std::string output_mode;
-		std::string xs_group_command_topic;
-		std::string xs_group_name;
-		std::string xs_robot_info_service;
-		std::vector<std::string> xs_joint_order_fallback;
-		double xs_robot_info_timeout_sec;
 		std::string joint_limits_yaml;
 		std::string ee_state_topic;
 		double position_limit_margin;
 		double position_command_time_from_start;
-		double position_lead_clamp;
 		double damping_lambda;
 		double singularity_threshold;
 		double alpha;
@@ -136,16 +100,7 @@ public:
 		get_parameter("joint_velocity_command_topic", joint_velocity_command_topic);
 		get_parameter("joint_position_command_topic", joint_position_command_topic);
 		get_parameter("output_mode", output_mode);
-		get_parameter("xs_group_command_topic", xs_group_command_topic);
-		get_parameter("xs_group_name", xs_group_name);
-		get_parameter("xs_robot_info_service", xs_robot_info_service);
-		get_parameter("xs_joint_order_fallback", xs_joint_order_fallback);
-		get_parameter("xs_robot_info_timeout_sec", xs_robot_info_timeout_sec);
 		get_parameter("position_command_time_from_start", position_command_time_from_start);
-		get_parameter("position_lead_clamp", position_lead_clamp);
-		get_parameter("reseed_divergence_threshold", reseed_divergence_threshold_);
-		get_parameter("enable_joint_cbf", enable_joint_cbf_);
-		get_parameter("joint_cbf_alpha", joint_cbf_alpha_);
 		get_parameter("joint_limits_yaml", joint_limits_yaml);
 		get_parameter("position_limit_margin", position_limit_margin);
 		get_parameter("use_damped_pseudoinverse", use_damped_pseudoinverse);
@@ -169,24 +124,8 @@ public:
 		singularity_threshold_ = std::max(0.0, singularity_threshold);
 		last_lambda_used_ = damping_lambda_;
 		joint_position_command_topic_ = joint_position_command_topic;
-
-		if (output_mode == "position") {
-			output_mode_ = OutputMode::Position;
-		} else if (output_mode == "velocity") {
-			output_mode_ = OutputMode::Velocity;
-		} else if (output_mode == "direct_position") {
-			output_mode_ = OutputMode::DirectPosition;
-		} else {
-			RCLCPP_WARN(
-				get_logger(),
-				"Unknown output_mode '%s'; falling back to 'position'.",
-				output_mode.c_str());
-			output_mode_ = OutputMode::Position;
-		}
-
-		xs_group_name_ = xs_group_name;
+		use_position_output_ = (output_mode == "position");
 		position_command_time_from_start_ = std::max(0.01, position_command_time_from_start);
-		position_lead_clamp_ = std::max(0.0, position_lead_clamp);
 		command_timeout_sec_ = std::max(0.0, command_timeout_sec);
 
 		if (!initialize_kdl(robot_description, urdf_path, base_link, ee_link)) {
@@ -209,17 +148,8 @@ public:
 			create_publisher<std_msgs::msg::Float64MultiArray>(joint_velocity_command_topic, 10);
 		joint_position_cmd_pub_ =
 			create_publisher<trajectory_msgs::msg::JointTrajectory>(joint_position_command_topic, 10);
-		xs_group_cmd_pub_ =
-			create_publisher<interbotix_xs_msgs::msg::JointGroupCommand>(xs_group_command_topic, 10);
 		jacobian_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>("~/jacobian", 10);
 		jacobian_pinv_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>("~/jacobian_pinv", 10);
-
-		if (output_mode_ == OutputMode::DirectPosition) {
-			xs_robot_info_client_ =
-				create_client<interbotix_xs_msgs::srv::RobotInfo>(xs_robot_info_service);
-			resolve_xs_joint_order(xs_robot_info_service, xs_joint_order_fallback,
-				xs_robot_info_timeout_sec);
-		}
 
 		if (publish_ee_state_) {
 			ee_state_pub_ = create_publisher<geometry_msgs::msg::PoseStamped>(ee_state_topic, 10);
@@ -236,7 +166,7 @@ public:
 		RCLCPP_INFO(
 			get_logger(),
 			"Jacobian velocity controller ready. command_topic='%s', output_mode='%s'",
-			velocity_command_topic.c_str(), output_mode.c_str());
+			velocity_command_topic.c_str(), use_position_output_ ? "position" : "velocity");
 	}
 
 	void load_joint_limits(const std::string & joint_limits_yaml_path)
@@ -335,28 +265,12 @@ private:
 
 		jacobian_solver_ = std::make_unique<KDL::ChainJntToJacSolver>(kdl_chain_);
 		chain_joint_names_ = extract_chain_joint_names(kdl_chain_);
+		// std::vector<size_t> command_to_chain_index_ = {2, 1, 0, 3, 4, 5}; // hard code mapping for now since we know the joint order in the URDF and the command convention we want to use. This will need to be more flexible if we want to support different robots and/or command conventions.
 
 		if (chain_joint_names_.empty()) {
 			RCLCPP_ERROR(get_logger(), "No non-fixed joints found in selected KDL chain.");
 			return false;
 		}
-
-		// Log the chain joint order so we can compare against the JTC's
-		// configured joint order. A mismatch — or a chain that picks up
-		// an unexpected joint (e.g., a roll joint that doesn't exist on
-		// the wx200 but does on the wx250s) — silently routes Jacobian
-		// columns to the wrong motors and produces "X command also drops Z"
-		// type symptoms.
-		std::string chain_str;
-		for (size_t i = 0; i < chain_joint_names_.size(); ++i) {
-			chain_str += chain_joint_names_[i];
-			if (i + 1 < chain_joint_names_.size()) chain_str += ", ";
-		}
-		RCLCPP_INFO(
-			get_logger(),
-			"KDL chain '%s' -> '%s' has %zu non-fixed joints: [%s]",
-			base_link.c_str(), ee_link.c_str(),
-			chain_joint_names_.size(), chain_str.c_str());
 		return true;
 	}
 
@@ -465,73 +379,21 @@ private:
 		}
 
 		const Eigen::MatrixXd jacobian = kdl_jacobian.data;
+		const Eigen::MatrixXd jacobian_pinv = compute_pseudoinverse(jacobian);
 
-		// The wx200 is 5-DOF. Asking the pinv to satisfy a 6D twist (with
-		// the angular rows zeroed) overconstrains the problem and produces
-		// a least-squares solution that trades translation accuracy for
-		// rotation suppression — notably, it prefers tilting the wrist
-		// over lifting the whole arm because wrist tilt is "cheap" in the
-		// joint-norm cost. Use a translation-only 3×N Jacobian so the
-		// problem becomes underconstrained (3 task constraints, 5 joints)
-		// and the pinv gives the minimum-norm qdot that *exactly* achieves
-		// the commanded translation, leaving orientation free.
-		const Eigen::MatrixXd jacobian_translation = jacobian.topRows(3);
-		// Published for debugging only; the actual qdot comes from the
-		// limit-aware solver below.
-		const Eigen::MatrixXd jacobian_pinv = compute_pseudoinverse(jacobian_translation);
-
-		Eigen::Vector3d xdot;
-		xdot << filtered_dx_, filtered_dy_, filtered_dz_;
-
-		// Solve with column-removal joint-limit handling: any joint at its
-		// position limit is frozen and the remaining joints redistribute to
-		// still produce the commanded EE velocity.
-		std::vector<bool> frozen;
-		Eigen::VectorXd qdot = solve_qdot_with_position_limits(q, jacobian_translation, xdot, frozen);
-
-		// Joint-limit CBF: scale the whole vector down (direction-preserving)
-		// as any joint nears its bound, so the arm eases into the limit
-		// rather than slamming into the column-removal freeze.
-		const double cbf_scale = joint_limit_cbf_scale(q, qdot);
-		qdot *= cbf_scale;
-
-		// recovered = what the EE will actually do given this qdot. With
-		// column removal this should still match xdot unless the unfrozen
-		// joints no longer span the task (then it's a least-squares fit and
-		// some axis is sacrificed — which the log makes visible).
-		const Eigen::Vector3d xdot_recovered = jacobian_translation * qdot;
-		std::string qdot_str;
-		std::string frozen_str;
-		for (Eigen::Index i = 0; i < qdot.size(); ++i) {
-			char buf[40];
-			std::snprintf(buf, sizeof(buf), "%s=%+.3f",
-				chain_joint_names_[static_cast<size_t>(i)].c_str(), qdot(i));
-			qdot_str += buf;
-			if (i + 1 < qdot.size()) qdot_str += " ";
-			if (frozen[static_cast<size_t>(i)]) {
-				if (!frozen_str.empty()) frozen_str += ", ";
-				frozen_str += chain_joint_names_[static_cast<size_t>(i)];
-			}
-		}
+		Eigen::VectorXd xdot = Eigen::VectorXd::Zero(6);
 		RCLCPP_INFO_THROTTLE(
 			get_logger(), *get_clock(), 500,
-			"cmd dx=%.3f dy=%.3f dz=%.3f | qdot {%s} | recovered=[%.3f, %.3f, %.3f] | frozen={%s} | cbf_scale=%.2f",
-			filtered_dx_, filtered_dy_, filtered_dz_, qdot_str.c_str(),
-			xdot_recovered.x(), xdot_recovered.y(), xdot_recovered.z(),
-			frozen_str.empty() ? "none" : frozen_str.c_str(), cbf_scale);
+			"Filtered command: dx=%.3f dy=%.3f dz=%.3f dtheta=%.3f",
+			filtered_dx_, filtered_dy_, filtered_dz_, filtered_dtheta_);
+		xdot(0) = filtered_dx_;
+		xdot(1) = filtered_dy_;
+		xdot(2) = filtered_dz_;
+		// Design decision: map RelativeMove.dtheta to end-effector angular z velocity only.
+		// Extend this to roll/pitch/yaw fields later if full orientation-rate control is needed.
+		// xdot(5) = filtered_dtheta_;
 
-		// Warn only when the redistribution can no longer achieve the
-		// command (task no longer spanned) — that's the case where the EE
-		// direction actually deviates from what was requested.
-		const double recovery_err = (xdot_recovered - xdot).norm();
-		if (!frozen_str.empty() && recovery_err > 1e-3) {
-			RCLCPP_WARN_THROTTLE(
-				get_logger(), *get_clock(), 500,
-				"Frozen joints {%s} leave the task underdetermined: EE will move [%.3f, %.3f, %.3f] vs commanded [%.3f, %.3f, %.3f] (err=%.3f).",
-				frozen_str.c_str(),
-				xdot_recovered.x(), xdot_recovered.y(), xdot_recovered.z(),
-				filtered_dx_, filtered_dy_, filtered_dz_, recovery_err);
-		}
+		Eigen::VectorXd qdot = jacobian_pinv * xdot;
 
 		rclcpp::Time now = get_clock()->now();
 		double dt = control_period_sec_;
@@ -542,8 +404,7 @@ private:
 			}
 		}
 
-		apply_velocity_acceleration_limits(qdot, dt);
-
+		apply_joint_limits(q, qdot, dt);
 		prev_control_time_ = now;
 		has_prev_control_time_ = true;
 		prev_qdot_ = qdot;
@@ -551,210 +412,50 @@ private:
 
 		jacobian_pub_->publish(to_multi_array(jacobian));
 		jacobian_pinv_pub_->publish(to_multi_array(jacobian_pinv));
-		switch (output_mode_) {
-			case OutputMode::Position:
-				publish_joint_position_command(q, qdot, dt);
-				break;
-			case OutputMode::DirectPosition:
-				publish_direct_position_command(q, qdot, dt);
-				break;
-			case OutputMode::Velocity:
-				publish_joint_velocity_command(qdot);
-				break;
+		if (use_position_output_) {
+			publish_joint_position_command(q, qdot, dt);
+		} else {
+			publish_joint_velocity_command(qdot);
 		}
 		maybe_publish_ee_state();
 	}
 
-	static constexpr double kQdotClampDeadband = 1e-3;
-
-	Eigen::VectorXd advance_integrated_setpoint(
-		const KDL::JntArray & q, const Eigen::VectorXd & qdot, double dt)
+	void publish_joint_position_command(const KDL::JntArray & q, const Eigen::VectorXd & qdot, double dt)
 	{
-		const Eigen::Index n = static_cast<Eigen::Index>(chain_joint_names_.size());
-
-		Eigen::VectorXd q_meas(n);
-		for (Eigen::Index i = 0; i < n; ++i) {
-			q_meas(i) = q(static_cast<unsigned int>(i));
-		}
-
-		// Seed on first use or after a shape change.
-		if (!integrated_position_initialized_ || integrated_positions_.size() != n) {
-			integrated_positions_ = q_meas;
+		Eigen::VectorXd q_cmd(static_cast<Eigen::Index>(chain_joint_names_.size()));
+		if (!integrated_position_initialized_ || integrated_positions_.size() != q_cmd.size()) {
+			for (Eigen::Index i = 0; i < q_cmd.size(); ++i) {
+				q_cmd(i) = q(static_cast<unsigned int>(i));
+			}
+			integrated_positions_ = q_cmd;
 			integrated_position_initialized_ = true;
-		} else {
-			// Auto-reseed only when the integrator has lost touch with the
-			// arm — e.g., MoveIt or a teach pendant moved the joints while
-			// velocity control was idle. Gravity droop produces a few
-			// centidegrees of divergence and must *not* trip this.
-			for (Eigen::Index i = 0; i < n; ++i) {
-				if (std::abs(integrated_positions_(i) - q_meas(i)) > reseed_divergence_threshold_) {
-					RCLCPP_INFO(
-						get_logger(),
-						"Integrator diverged on joint %ld (|Δ|=%.3f > %.3f); reseeding from measured.",
-						static_cast<long>(i),
-						std::abs(integrated_positions_(i) - q_meas(i)),
-						reseed_divergence_threshold_);
-					integrated_positions_ = q_meas;
-					break;
-				}
-			}
 		}
 
-		// Advance the setpoint at the true commanded speed: step over the real
-		// elapsed dt, not the time_from_start window. Fixes the ~1/3-speed
-		// scaling error from integrating over dt but executing over 0.1s.
 		const double integration_dt = std::max(dt, 1e-3);
-		integrated_positions_ += qdot * integration_dt;
+		q_cmd = integrated_positions_ + qdot * integration_dt;
 
-		// Anti-windup: only clamp on the side we're actively commanding
-		// in this cycle. The clamp's job is to prevent the integrator from
-		// running away from the motor when the motor lags an active push;
-		// it is *not* a "tracking error" clamp.
-		//
-		// If qdot ≈ 0 (idle hold), the integrator is frozen at the last
-		// held setpoint. A symmetric clamp would pull that setpoint with
-		// any measured drift — including gravity droop — and the motor
-		// would stop fighting to hold position. By gating each side on
-		// qdot's sign we let gravity-induced tracking error pile up
-		// against the held setpoint, which is exactly the load the
-		// motor's PID is supposed to resist. Sustained droop should be
-		// caught by the effort watchdog, not papered over here.
-		for (Eigen::Index i = 0; i < n; ++i) {
-			if (qdot(i) > kQdotClampDeadband) {
-				const double upper = q_meas(i) + position_lead_clamp_;
-				if (integrated_positions_(i) > upper) {
-					integrated_positions_(i) = upper;
-				}
-			} else if (qdot(i) < -kQdotClampDeadband) {
-				const double lower = q_meas(i) - position_lead_clamp_;
-				if (integrated_positions_(i) < lower) {
-					integrated_positions_(i) = lower;
-				}
-			}
-		}
-
-		return q_meas;
-	}
-
-	Eigen::VectorXd apply_position_limits(const Eigen::VectorXd & q_cmd_in)
-	{
-		Eigen::VectorXd q_cmd = q_cmd_in;
 		for (Eigen::Index i = 0; i < q_cmd.size(); ++i) {
 			const JointLimits & lim = joint_limits_[static_cast<size_t>(i)];
 			if (lim.has_position_limits) {
 				q_cmd(i) = std::max(lim.min_position, std::min(lim.max_position, q_cmd(i)));
 			}
 		}
-		return q_cmd;
-	}
 
-	void publish_joint_position_command(const KDL::JntArray & q, const Eigen::VectorXd & qdot, double dt)
-	{
-		advance_integrated_setpoint(q, qdot, dt);
-		// Publish a point one time_from_start window ahead so the JTC
-		// interpolates toward it at qdot.
-		const Eigen::VectorXd q_cmd =
-			apply_position_limits(integrated_positions_ + qdot * position_command_time_from_start_);
 		publish_position_target(q_cmd);
-	}
+		integrated_positions_ = q_cmd;
 
-	void publish_direct_position_command(
-		const KDL::JntArray & q, const Eigen::VectorXd & qdot, double dt)
-	{
-		if (!xs_joint_order_resolved_) {
-			RCLCPP_WARN_THROTTLE(
-				get_logger(), *get_clock(), 2000,
-				"xs joint order not resolved yet — skipping direct_position publish.");
-			return;
-		}
+		// publish_position_target(q_cmd);
+		// Eigen::VectorXd q_cmd(static_cast<Eigen::Index>(chain_joint_names_.size()));
+		// for (Eigen::Index i = 0; i < q_cmd.size(); ++i) {
+		// 	q_cmd(i) = q(static_cast<unsigned int>(i)) + qdot(i) * position_command_time_from_start_;
+		// }
 
-		advance_integrated_setpoint(q, qdot, dt);
-
-		// In direct mode the DXL motors run their own profile per the
-		// xs_sdk modes.yaml. We still lead by position_command_time_from_start
-		// so the motor's profile has a forward setpoint to ramp toward;
-		// position_lead_clamp keeps that from running away under stalls.
-		const Eigen::VectorXd q_cmd =
-			apply_position_limits(integrated_positions_ + qdot * position_command_time_from_start_);
-
-		interbotix_xs_msgs::msg::JointGroupCommand msg;
-		msg.name = xs_group_name_;
-		msg.cmd.resize(xs_joint_order_.size());
-		for (size_t xs_i = 0; xs_i < xs_joint_order_.size(); ++xs_i) {
-			const size_t chain_i = xs_to_chain_index_[xs_i];
-			msg.cmd[xs_i] = static_cast<float>(q_cmd(static_cast<Eigen::Index>(chain_i)));
-		}
-		xs_group_cmd_pub_->publish(msg);
-	}
-
-	void resolve_xs_joint_order(
-		const std::string & service_name,
-		const std::vector<std::string> & fallback_order,
-		double timeout_sec)
-	{
-		std::vector<std::string> xs_order = fallback_order;
-		bool from_service = false;
-
-		if (xs_robot_info_client_->wait_for_service(
-				std::chrono::milliseconds(static_cast<int64_t>(timeout_sec * 1000.0))))
-		{
-			auto request = std::make_shared<interbotix_xs_msgs::srv::RobotInfo::Request>();
-			request->cmd_type = "group";
-			request->name = xs_group_name_;
-			auto future = xs_robot_info_client_->async_send_request(request);
-			// We're still inside the constructor, so the executor isn't spinning
-			// yet — spin_until_future_complete on the node directly.
-			const auto status = rclcpp::spin_until_future_complete(
-				get_node_base_interface(), future,
-				std::chrono::milliseconds(static_cast<int64_t>(timeout_sec * 1000.0)));
-			if (status == rclcpp::FutureReturnCode::SUCCESS) {
-				const auto response = future.get();
-				if (!response->joint_names.empty()) {
-					xs_order = response->joint_names;
-					from_service = true;
-				}
-			}
-		}
-
-		if (!from_service) {
-			RCLCPP_WARN(
-				get_logger(),
-				"Could not query '%s' for xs_group '%s'; using fallback joint order.",
-				service_name.c_str(), xs_group_name_.c_str());
-		}
-
-		// Build the index map: for each XS slot, find the matching chain joint.
-		xs_to_chain_index_.clear();
-		xs_to_chain_index_.reserve(xs_order.size());
-		for (const auto & xs_name : xs_order) {
-			const auto it = std::find(
-				chain_joint_names_.begin(), chain_joint_names_.end(), xs_name);
-			if (it == chain_joint_names_.end()) {
-				RCLCPP_ERROR(
-					get_logger(),
-					"XS group joint '%s' is not in the KDL chain. direct_position will refuse to publish.",
-					xs_name.c_str());
-				xs_to_chain_index_.clear();
-				xs_joint_order_.clear();
-				xs_joint_order_resolved_ = false;
-				return;
-			}
-			xs_to_chain_index_.push_back(
-				static_cast<size_t>(std::distance(chain_joint_names_.begin(), it)));
-		}
-
-		xs_joint_order_ = xs_order;
-		xs_joint_order_resolved_ = true;
-
-		std::string order_str;
-		for (size_t i = 0; i < xs_joint_order_.size(); ++i) {
-			order_str += xs_joint_order_[i];
-			if (i + 1 < xs_joint_order_.size()) order_str += ", ";
-		}
-		RCLCPP_INFO(
-			get_logger(),
-			"direct_position xs joint order [%s] (%s)",
-			order_str.c_str(), from_service ? "from RobotInfo" : "fallback");
+		// for (Eigen::Index i = 0; i < q_cmd.size(); ++i) {
+		// 	const JointLimits & lim = joint_limits_[static_cast<size_t>(i)];
+		// 	if (lim.has_position_limits) {
+		// 		q_cmd(i) = std::max(lim.min_position, std::min(lim.max_position, q_cmd(i)));
+		// 	}
+		// }
 	}
 
 	void publish_position_target(const Eigen::VectorXd & q_target)
@@ -809,123 +510,7 @@ private:
 		return jacobian.transpose() * regularized.inverse();
 	}
 
-	// Solve for qdot, freezing any joint that the solution would push past
-	// its position limit and redistributing the task onto the remaining
-	// joints. Unlike post-hoc zeroing of qdot — which breaks the identity
-	// J·qdot = xdot and so corrupts the commanded EE direction — removing
-	// the joint's *column* before re-solving keeps the remaining joints
-	// producing the commanded EE velocity exactly (as long as they still
-	// span the task). Iterates because freezing one joint can push another
-	// into its limit. Reports which joints ended up frozen.
-	Eigen::VectorXd solve_qdot_with_position_limits(
-		const KDL::JntArray & q,
-		const Eigen::MatrixXd & jacobian_translation,
-		const Eigen::Vector3d & xdot_desired,
-		std::vector<bool> & frozen_out)
-	{
-		const Eigen::Index n = jacobian_translation.cols();
-		std::vector<bool> active(static_cast<size_t>(n), true);
-		Eigen::VectorXd qdot = Eigen::VectorXd::Zero(n);
-
-		const bool limits_usable =
-			has_joint_limits_ && joint_limits_.size() == static_cast<size_t>(n);
-
-		// At most n iterations: each iteration freezes ≥1 more joint or stops.
-		for (Eigen::Index iter = 0; iter < n; ++iter) {
-			std::vector<Eigen::Index> active_idx;
-			active_idx.reserve(static_cast<size_t>(n));
-			for (Eigen::Index i = 0; i < n; ++i) {
-				if (active[static_cast<size_t>(i)]) active_idx.push_back(i);
-			}
-			if (active_idx.empty()) {
-				qdot.setZero();
-				break;
-			}
-
-			Eigen::MatrixXd J_reduced(
-				jacobian_translation.rows(), static_cast<Eigen::Index>(active_idx.size()));
-			for (size_t k = 0; k < active_idx.size(); ++k) {
-				J_reduced.col(static_cast<Eigen::Index>(k)) =
-					jacobian_translation.col(active_idx[k]);
-			}
-
-			const Eigen::MatrixXd J_pinv = compute_pseudoinverse(J_reduced);
-			const Eigen::VectorXd qdot_reduced = J_pinv * xdot_desired;
-
-			qdot.setZero();
-			for (size_t k = 0; k < active_idx.size(); ++k) {
-				qdot(active_idx[k]) = qdot_reduced(static_cast<Eigen::Index>(k));
-			}
-
-			if (!limits_usable) break;
-
-			bool froze_any = false;
-			for (Eigen::Index i = 0; i < n; ++i) {
-				if (!active[static_cast<size_t>(i)]) continue;
-				const JointLimits & lim = joint_limits_[static_cast<size_t>(i)];
-				if (!lim.has_position_limits) continue;
-				const double q_i = q(static_cast<unsigned int>(i));
-				const double upper_guard = lim.max_position - position_limit_margin_;
-				const double lower_guard = lim.min_position + position_limit_margin_;
-				if ((q_i >= upper_guard && qdot(i) > 0.0) ||
-					(q_i <= lower_guard && qdot(i) < 0.0)) {
-					active[static_cast<size_t>(i)] = false;
-					froze_any = true;
-				}
-			}
-			if (!froze_any) break;
-		}
-
-		frozen_out.assign(static_cast<size_t>(n), false);
-		for (Eigen::Index i = 0; i < n; ++i) {
-			frozen_out[static_cast<size_t>(i)] = !active[static_cast<size_t>(i)];
-		}
-		return qdot;
-	}
-
-	// Joint-limit CBF. Returns a single scalar in [0, 1] to scale the whole
-	// qdot vector by, so the arm decelerates along the commanded Cartesian
-	// direction as any joint approaches its bound. For each joint moving
-	// toward a limit, the barrier h is the (margin-shifted) distance to that
-	// limit and the admissible speed is alpha·h; the binding joint sets the
-	// global scale. As h → 0 the scale → 0, braking the motion smoothly
-	// before the column-removal freeze ever has to act.
-	double joint_limit_cbf_scale(const KDL::JntArray & q, const Eigen::VectorXd & qdot)
-	{
-		if (!enable_joint_cbf_ || !has_joint_limits_ ||
-			joint_limits_.size() != static_cast<size_t>(qdot.size())) {
-			return 1.0;
-		}
-
-		double scale = 1.0;
-		for (Eigen::Index i = 0; i < qdot.size(); ++i) {
-			const JointLimits & lim = joint_limits_[static_cast<size_t>(i)];
-			if (!lim.has_position_limits) continue;
-			const double q_i = q(static_cast<unsigned int>(i));
-
-			if (qdot(i) > 0.0) {
-				const double h = (lim.max_position - position_limit_margin_) - q_i;
-				const double cap = joint_cbf_alpha_ * std::max(0.0, h);
-				if (qdot(i) > cap) {
-					scale = std::min(scale, cap / qdot(i));
-				}
-			} else if (qdot(i) < 0.0) {
-				const double h = q_i - (lim.min_position + position_limit_margin_);
-				const double cap = joint_cbf_alpha_ * std::max(0.0, h);
-				if (-qdot(i) > cap) {
-					scale = std::min(scale, cap / (-qdot(i)));
-				}
-			}
-		}
-		return std::max(0.0, std::min(1.0, scale));
-	}
-
-	// Velocity and acceleration saturation. Position limits are handled
-	// upstream in solve_qdot_with_position_limits (column removal), so they
-	// are intentionally not repeated here. Velocity/accel clipping can still
-	// perturb the EE direction slightly, but unlike a hard position-limit
-	// zero it only scales magnitude / rate, so the direction error is small.
-	void apply_velocity_acceleration_limits(Eigen::VectorXd & qdot, double dt)
+	void apply_joint_limits(const KDL::JntArray & q, Eigen::VectorXd & qdot, double dt)
 	{
 		if (!has_joint_limits_ || joint_limits_.size() != static_cast<size_t>(qdot.size())) {
 			return;
@@ -933,6 +518,18 @@ private:
 
 		for (Eigen::Index i = 0; i < qdot.size(); ++i) {
 			const JointLimits & lim = joint_limits_[static_cast<size_t>(i)];
+
+			if (lim.has_position_limits) {
+				const double q_i = q(static_cast<unsigned int>(i));
+				const double upper_guard = lim.max_position - position_limit_margin_;
+				const double lower_guard = lim.min_position + position_limit_margin_;
+				if (q_i >= upper_guard && qdot(i) > 0.0) {
+					qdot(i) = 0.0;
+				}
+				if (q_i <= lower_guard && qdot(i) < 0.0) {
+					qdot(i) = 0.0;
+				}
+			}
 
 			if (lim.has_velocity_limits) {
 				qdot(i) = std::max(-lim.max_velocity, std::min(lim.max_velocity, qdot(i)));
@@ -971,24 +568,16 @@ private:
 	void publish_zero_joint_velocity()
 	{
 		const Eigen::VectorXd zero = Eigen::VectorXd::Zero(static_cast<Eigen::Index>(chain_joint_names_.size()));
-		switch (output_mode_) {
-			case OutputMode::Position:
-			case OutputMode::DirectPosition:
-				// Idle in either position mode: stop publishing commands so
-				// that other producers (MoveIt's follow_joint_trajectory
-				// action, the XS driver's own services, etc.) can drive
-				// the arm without being preempted at every control tick.
-				// The integrator persists across the idle gap; if MoveIt
-				// (or anything else) moves the arm meanwhile, the
-				// reseed_divergence_threshold check in
-				// advance_integrated_setpoint catches the jump and
-				// reseeds. This intentionally does NOT reseed on every
-				// short command gap, which would track gravity droop
-				// downward each session.
-				break;
-			case OutputMode::Velocity:
-				publish_joint_velocity_command(zero);
-				break;
+		if (use_position_output_) {
+			// Idle in position mode: stop publishing JointTrajectory commands so that
+			// other producers (MoveIt's follow_joint_trajectory action, etc.) can drive
+			// the JTC without being preempted at every control tick. Mark the integrated
+			// position as uninitialized so the next active cycle re-seeds it from the
+			// measured joint positions — otherwise the arm would snap back to its
+			// pre-MoveIt pose on the first new velocity command.
+			integrated_position_initialized_ = false;
+		} else {
+			publish_joint_velocity_command(zero);
 		}
 		prev_qdot_ = zero;
 		has_prev_qdot_ = true;
@@ -1040,20 +629,12 @@ private:
 		return msg;
 	}
 
-	enum class OutputMode { Position, Velocity, DirectPosition };
-
 	KDL::Tree kdl_tree_;
 	KDL::Chain kdl_chain_;
 	std::unique_ptr<KDL::ChainJntToJacSolver> jacobian_solver_;
 	std::vector<std::string> chain_joint_names_;
 	std::vector<std::string> command_joint_names_;
 	std::vector<size_t> command_to_chain_index_;
-	// XS group joint order (from RobotInfo, or fallback) and the lookup
-	// from xs slot index -> chain joint index used in direct_position mode.
-	std::vector<std::string> xs_joint_order_;
-	std::vector<size_t> xs_to_chain_index_;
-	bool xs_joint_order_resolved_{false};
-	std::string xs_group_name_;
 
 	std::mutex command_mutex_;
 	std::mutex joint_state_mutex_;
@@ -1072,15 +653,11 @@ private:
 	bool has_joint_limits_{false};
 	double position_limit_margin_{0.02};
 	std::vector<JointLimits> joint_limits_;
-	OutputMode output_mode_{OutputMode::Position};
+	bool use_position_output_{true};
 	std::string joint_position_command_topic_;
 	double position_command_time_from_start_{0.1};
-	double position_lead_clamp_{0.05};
 	bool integrated_position_initialized_{false};
 	Eigen::VectorXd integrated_positions_;
-	double reseed_divergence_threshold_{0.3};
-	bool enable_joint_cbf_{true};
-	double joint_cbf_alpha_{2.0};
 
 	bool use_damped_pseudoinverse_{true};
 	double damping_lambda_{0.02};
@@ -1100,8 +677,6 @@ private:
 	rclcpp::Subscription<realtime_servo::msg::RelativeMove>::SharedPtr vel_cmd_sub_;
 	rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr joint_velocity_cmd_pub_;
 	rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr joint_position_cmd_pub_;
-	rclcpp::Publisher<interbotix_xs_msgs::msg::JointGroupCommand>::SharedPtr xs_group_cmd_pub_;
-	rclcpp::Client<interbotix_xs_msgs::srv::RobotInfo>::SharedPtr xs_robot_info_client_;
 	rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr jacobian_pub_;
 	rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr jacobian_pinv_pub_;
 	rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr ee_state_pub_;
