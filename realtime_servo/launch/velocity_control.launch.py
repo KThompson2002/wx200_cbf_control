@@ -405,32 +405,32 @@ def launch_setup(context):
         }],
     )
 
-    effort_watchdog_node = Node(
-        package='wx200_motion',
-        executable='effort_motor_watchdog',
-        name='effort_motor_watchdog',
-        output='screen',
-        parameters=[{
-            'joint_states_topic': f'/{robot_name}/joint_states',
-            'cmd_vel_input_topic': '/velocity_pub/vel_command',
-            'cmd_vel_output_topic': f'/{robot_name}/cmd_vel',
-            'reboot_service': f'/{robot_name}/reboot_motors',
-            'get_registers_service': f'/{robot_name}/get_motor_registers',
-            'torque_enable_service': f'/{robot_name}/torque_enable',
-            'group_name': 'arm',
-            # Tune these on real hardware. Starting from rail-berkeley's
-            # wx250s values dropped to 5 joints; the wx200's shoulder is
-            # single (not dual), so headroom may be tighter.
-            'joint_names': ['waist', 'shoulder', 'elbow', 'wrist_angle', 'wrist_rotate'],
-            'effort_thresholds': [1360.0, 1700.0, 1020.0, 1020.0, 1020.0],
-            'effort_violation_window_sec': 0.1,
-            'effort_check_rate_hz': 50.0,
-            'motor_status_check_rate_hz': 1.0,
-            'zero_publish_rate_hz': 30.0,
-            'auto_reboot': False,
-            'reboot_cooldown_sec': 5.0,
-        }],
-    )
+    # effort_watchdog_node = Node(
+    #     package='wx200_motion',
+    #     executable='effort_motor_watchdog',
+    #     name='effort_motor_watchdog',
+    #     output='screen',
+    #     parameters=[{
+    #         'joint_states_topic': f'/{robot_name}/joint_states',
+    #         'cmd_vel_input_topic': '/velocity_pub/vel_command',
+    #         'cmd_vel_output_topic': f'/{robot_name}/cmd_vel',
+    #         'reboot_service': f'/{robot_name}/reboot_motors',
+    #         'get_registers_service': f'/{robot_name}/get_motor_registers',
+    #         'torque_enable_service': f'/{robot_name}/torque_enable',
+    #         'group_name': 'arm',
+    #         # Tune these on real hardware. Starting from rail-berkeley's
+    #         # wx250s values dropped to 5 joints; the wx200's shoulder is
+    #         # single (not dual), so headroom may be tighter.
+    #         'joint_names': ['waist', 'shoulder', 'elbow', 'wrist_angle', 'wrist_rotate'],
+    #         'effort_thresholds': [1360.0, 1700.0, 1020.0, 1020.0, 1020.0],
+    #         'effort_violation_window_sec': 0.1,
+    #         'effort_check_rate_hz': 50.0,
+    #         'motor_status_check_rate_hz': 1.0,
+    #         'zero_publish_rate_hz': 30.0,
+    #         'auto_reboot': False,
+    #         'reboot_cooldown_sec': 5.0,
+    #     }],
+    # )
 
     # Controller configuration
     # ros2_control_node = Node(
@@ -508,13 +508,14 @@ def launch_setup(context):
                 # 10 Hz (0.1 s); 0.4 s bridges any publish jitter while still
                 # coasting only briefly if the publisher dies. The teleop's
                 # own key_hold_timeout governs stop-on-release, not this.
-                'command_timeout_sec': 0.4,
+                'command_timeout_sec': 0.6,
                 # Joint-limit CBF: smooth deceleration as any joint nears its
                 # bound. Higher alpha = brake later / allow more speed near
                 # the limit. Set enable_joint_cbf False to fall back to the
                 # hard column-removal freeze only.
                 'enable_joint_cbf': True,
                 'joint_cbf_alpha': 2.0,
+                'position_lead_clamp': 0.20,
 
             },
         ],
@@ -536,7 +537,7 @@ def launch_setup(context):
         # *load_controllers,c
         TimerAction(period=14.0, actions=[jacobian_velctrl]),
         # Bring the watchdog up after the XS driver services exist.
-        TimerAction(period=12.0, actions=[effort_watchdog_node]),
+        # TimerAction(period=12.0, actions=[effort_watchdog_node]),
         rviz_node,
     ]
 

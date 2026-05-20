@@ -214,7 +214,7 @@ class CBFFilter(Node):
         if pos is None:
             return
 
-        # msg = self._apply_cbf(msg, pos)
+        msg = self._apply_cbf(msg, pos)
         # msg = self._apply_z_hold(msg, pos)
         self._cmd_pub.publish(msg)
 
