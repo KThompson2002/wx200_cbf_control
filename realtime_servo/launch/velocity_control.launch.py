@@ -515,7 +515,7 @@ def launch_setup(context):
                 # hard column-removal freeze only.
                 'enable_joint_cbf': True,
                 'joint_cbf_alpha': 2.0,
-                'position_lead_clamp': 0.20,
+                'position_lead_clamp': 0.40,
 
             },
         ],

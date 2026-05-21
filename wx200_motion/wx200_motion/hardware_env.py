@@ -47,7 +47,7 @@ class HardwareEnv(Node):
         # self.create_subscription(EndpointState, '/robot/limb/right/endpoint_state', self._endpoint_state_callback, 10) ### ????
 
         self.done_reset = False
-        self.control_freq = 10.0  # Hz
+        self.control_freq = 200.0  # Hz
 
         # Publish initial reset
         msg = String()
